@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Register App - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page" style="max-width:640px;">
+  <h1>Register App</h1>
+  <div class="sub">Add an app to your server dashboard.</div>
+  <div class="card">
+    <form method="POST">
+      <div class="field">
+        <div class="label">App Name *</div>
+        <input name="name" required autofocus placeholder="e.g. Community Platform" />
+      </div>
+      <div class="field">
+        <div class="label">URL</div>
+        <input name="url" placeholder="https://community.revolv.uk" />
+        <div class="hint">Used for health checks. Leave blank if not deployed yet.</div>
+      </div>
+      <div class="field">
+        <div class="label">GitHub URL</div>
+        <input name="github_url" placeholder="https://github.com/revolv-build/community" />
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <div class="label">Server Path</div>
+          <input name="server_path" placeholder="/root/community" />
+        </div>
+        <div class="field">
+          <div class="label">Port</div>
+          <input name="port" type="number" placeholder="5001" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <div class="label">Systemd Service</div>
+          <input name="service_name" placeholder="community.service" />
+          <div class="hint">For status checks and restart controls.</div>
+        </div>
+        <div class="field">
+          <div class="label">Log File Path</div>
+          <input name="log_path" placeholder="/var/log/community.log" />
+        </div>
+      </div>
+      <div class="field">
+        <div class="label">Description</div>
+        <textarea name="description" placeholder="What does this app do?" style="min-height:80px;"></textarea>
+      </div>
+      <div class="flex gap-8">
+        <button type="submit" class="btn btn-primary">Register App</button>
+        <a href="/dashboard" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,21 +1,21 @@
 """
-Baseline
-────────
-A production-ready Flask starter kit with authentication, admin dashboard,
-account management, and GDPR compliance. Fork this repo and build your
-app-specific features on top.
+Baseline Admin
+──────────────
+Central admin hub for managing all baseline-forked apps on this server.
+Server stats, app registry, health monitoring, log viewer, quick links.
 
 Architecture:
   - Auth: login, register, password reset, email verification
   - Account: profile, password, avatar, GDPR export/delete
+  - Hub: app registry, server overview, health checks, log viewer
   - Admin: user management, impersonation, platform stats
-  - Example CRUD: notes (delete when you build your own features)
 """
 
 import json
 import os
 import re
 import sqlite3
+import subprocess
 import time
 from datetime import datetime, timezone
 from functools import wraps
@@ -58,15 +58,15 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = os.environ.get("FLASK_ENV") == "production"
 app.config["PERMANENT_SESSION_LIFETIME"] = 86400 * 7  # 7 days
 app.config["WTF_CSRF_TIME_LIMIT"] = 3600  # 1 hour CSRF token validity
-DEFAULT_PORT = int(os.environ.get("PORT", 5000))
+DEFAULT_PORT = int(os.environ.get("PORT", 5002))
 
-# App metadata — update these for your project
-APP_NAME = os.environ.get("APP_NAME", "Baseline")
+# App metadata
+APP_NAME = os.environ.get("APP_NAME", "Baseline Admin")
 APP_SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "support@example.com")
 
 # Refuse to boot with default secret key in production
 if os.environ.get("FLASK_ENV") == "production" and app.secret_key == "change-me-in-production":
-    raise RuntimeError("SECRET_KEY must be set in production. Generate one with: python3 -c \"import secrets; print(secrets.token_hex(32))\"")
+    raise RuntimeError("SECRET_KEY must be set in production.")
 
 # CSRF protection
 csrf = CSRFProtect(app)
@@ -102,7 +102,6 @@ ALLOWED_ATTRS = {
 }
 
 def render_markdown(text):
-    """Convert Markdown to sanitised HTML."""
     if not text:
         return ""
     raw_html = md_lib.markdown(text, extensions=["fenced_code", "tables", "nl2br"])
@@ -115,7 +114,6 @@ def markdown_filter(text):
     return render_markdown(text)
 
 def strip_markdown(text):
-    """Remove markdown syntax for plain text previews."""
     if not text:
         return ""
     t = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
@@ -134,7 +132,6 @@ def strip_markdown(text):
 
 @app.template_filter("timeago")
 def timeago_filter(dt_str):
-    """Convert ISO datetime string to relative time like '3h ago'."""
     if not dt_str:
         return ""
     try:
@@ -173,7 +170,6 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", f"{APP_NAME} <noreply@example.com>")
 
 def send_email(to, subject, html_body):
-    """Send email via Resend API. Returns True on success."""
     if not RESEND_API_KEY:
         print(f"[EMAIL SKIPPED — no API key] To: {to}, Subject: {subject}")
         return False
@@ -245,18 +241,24 @@ def init_db():
             created       TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS notes (
+        CREATE TABLE IF NOT EXISTS apps (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id       INTEGER NOT NULL,
-            title         TEXT NOT NULL,
-            body          TEXT DEFAULT '',
+            name          TEXT NOT NULL,
+            slug          TEXT NOT NULL UNIQUE,
+            url           TEXT DEFAULT '',
+            github_url    TEXT DEFAULT '',
+            server_path   TEXT DEFAULT '',
+            port          INTEGER DEFAULT 0,
+            service_name  TEXT DEFAULT '',
+            log_path      TEXT DEFAULT '',
+            description   TEXT DEFAULT '',
+            status        TEXT DEFAULT 'unknown',
+            last_check    TEXT DEFAULT '',
             created       TEXT NOT NULL,
-            updated       TEXT NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            updated       TEXT NOT NULL
         );
     """)
 
-    # Run migrations
     run_migrations(db)
 
     # Create default platform admin if no users exist
@@ -272,7 +274,6 @@ def init_db():
     db.close()
 
 def run_migrations(db):
-    """Run numbered SQL migration files from migrations/ directory."""
     migrations_dir = APP_DIR / "migrations"
     if not migrations_dir.exists():
         return
@@ -308,7 +309,6 @@ def current_user():
     return None
 
 def login_user(user):
-    """Set session for user with session regeneration to prevent fixation."""
     session.clear()
     session["user_id"] = user["id"]
     session["user_name"] = user["name"]
@@ -319,14 +319,12 @@ def slugify(text):
     return slug[:60]
 
 def avatar_html(user, size=22):
-    """Generate avatar HTML — photo if available, initial letter if not."""
     if user and user["avatar_path"]:
         return Markup(f'<img src="/uploads/{user["avatar_path"]}" class="avatar-img" style="width:{size}px;height:{size}px;" />')
     name = user["name"] if user else "?"
     return Markup(f'<span class="avatar" style="width:{size}px;height:{size}px;font-size:{max(10, size//2)}px;">{name[0].upper()}</span>')
 
 def paginate(query, params, page, per_page=20):
-    """Add LIMIT/OFFSET to a query and return (items, total, pages)."""
     db = get_db()
     count_q = f"SELECT COUNT(*) FROM ({query})"
     total = db.execute(count_q, params).fetchone()[0]
@@ -337,7 +335,6 @@ def paginate(query, params, page, per_page=20):
     return items, total, pages, page
 
 def search_like(term):
-    """Escape a search term for safe LIKE queries. Returns (pattern, param)."""
     escaped = term.replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
 
@@ -386,11 +383,9 @@ def login_page():
     err = None
     form_ts = str(int(time.time()))
     if request.method == "POST":
-        # Honeypot — bots fill hidden field
         if request.form.get("website_url", ""):
             err = "Invalid email or password."
             return render_template("login.html", err=err, form_ts=form_ts)
-        # Time trap — reject instant submissions
         ts = request.form.get("_ts", "0")
         try:
             if time.time() - int(ts) < 1.5:
@@ -569,19 +564,432 @@ def resend_verification():
         flash("Verification email sent! Check your inbox.", "success")
     return redirect("/dashboard")
 
-# ── Dashboard ─────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+#  SERVER UTILITIES — system info, health checks, log reading
+# ══════════════════════════════════════════════════════════════════
+
+def get_server_stats():
+    """Gather live server statistics."""
+    stats = {}
+
+    # Uptime
+    try:
+        with open("/proc/uptime") as f:
+            uptime_seconds = float(f.read().split()[0])
+        days = int(uptime_seconds // 86400)
+        hours = int((uptime_seconds % 86400) // 3600)
+        stats["uptime"] = f"{days}d {hours}h"
+        stats["uptime_seconds"] = uptime_seconds
+    except Exception:
+        stats["uptime"] = "unknown"
+
+    # Load average
+    try:
+        with open("/proc/loadavg") as f:
+            parts = f.read().split()
+            stats["load_1m"] = parts[0]
+            stats["load_5m"] = parts[1]
+            stats["load_15m"] = parts[2]
+    except Exception:
+        stats["load_1m"] = stats["load_5m"] = stats["load_15m"] = "?"
+
+    # Memory
+    try:
+        with open("/proc/meminfo") as f:
+            meminfo = {}
+            for line in f:
+                parts = line.split(":")
+                if len(parts) == 2:
+                    key = parts[0].strip()
+                    val = int(parts[1].strip().split()[0])  # kB
+                    meminfo[key] = val
+            total = meminfo.get("MemTotal", 1)
+            available = meminfo.get("MemAvailable", 0)
+            used = total - available
+            stats["mem_total_gb"] = round(total / 1048576, 1)
+            stats["mem_used_gb"] = round(used / 1048576, 1)
+            stats["mem_pct"] = round(used / total * 100, 1) if total else 0
+    except Exception:
+        stats["mem_total_gb"] = stats["mem_used_gb"] = 0
+        stats["mem_pct"] = 0
+
+    # Disk
+    try:
+        result = subprocess.run(["df", "-B1", "/"], capture_output=True, text=True, timeout=5)
+        lines = result.stdout.strip().split("\n")
+        if len(lines) >= 2:
+            parts = lines[1].split()
+            total = int(parts[1])
+            used = int(parts[2])
+            stats["disk_total_gb"] = round(total / 1073741824, 1)
+            stats["disk_used_gb"] = round(used / 1073741824, 1)
+            stats["disk_pct"] = round(used / total * 100, 1) if total else 0
+    except Exception:
+        stats["disk_total_gb"] = stats["disk_used_gb"] = 0
+        stats["disk_pct"] = 0
+
+    # CPU count
+    try:
+        stats["cpu_count"] = os.cpu_count() or 1
+    except Exception:
+        stats["cpu_count"] = 1
+
+    # Hostname
+    try:
+        stats["hostname"] = subprocess.run(["hostname"], capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        stats["hostname"] = "unknown"
+
+    # IP
+    try:
+        stats["ip"] = subprocess.run(
+            ["hostname", "-I"], capture_output=True, text=True, timeout=5
+        ).stdout.strip().split()[0]
+    except Exception:
+        stats["ip"] = "unknown"
+
+    return stats
+
+
+def check_app_health(app_row):
+    """Check if an app is responding. Returns 'online', 'offline', or 'unknown'."""
+    url = app_row["url"]
+    if not url:
+        # Fall back to checking systemd service
+        service = app_row["service_name"]
+        if service:
+            try:
+                result = subprocess.run(
+                    ["systemctl", "is-active", service],
+                    capture_output=True, text=True, timeout=5
+                )
+                return "online" if result.stdout.strip() == "active" else "offline"
+            except Exception:
+                return "unknown"
+        return "unknown"
+
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return "online" if resp.status < 500 else "offline"
+    except Exception:
+        # Try GET if HEAD fails
+        try:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return "online" if resp.status < 500 else "offline"
+        except Exception:
+            return "offline"
+
+
+def get_service_status(service_name):
+    """Get detailed systemd service status."""
+    if not service_name:
+        return None
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", service_name, "--no-pager",
+             "-p", "ActiveState,SubState,MainPID,MemoryCurrent,ActiveEnterTimestamp"],
+            capture_output=True, text=True, timeout=5
+        )
+        info = {}
+        for line in result.stdout.strip().split("\n"):
+            if "=" in line:
+                key, val = line.split("=", 1)
+                info[key] = val
+        return info
+    except Exception:
+        return None
+
+
+def read_log_lines(log_path, num_lines=100):
+    """Read the last N lines from a log file."""
+    if not log_path or not os.path.exists(log_path):
+        return []
+    try:
+        result = subprocess.run(
+            ["tail", "-n", str(num_lines), log_path],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.stdout.strip().split("\n") if result.stdout.strip() else []
+    except Exception:
+        return []
+
+
+def get_log_stats(log_path):
+    """Parse access log for basic request stats."""
+    if not log_path or not os.path.exists(log_path):
+        return {"total_requests": 0, "today_requests": 0, "error_requests": 0, "size_bytes": 0}
+
+    stats = {"total_requests": 0, "today_requests": 0, "error_requests": 0}
+    today = datetime.now().strftime("%d/%b/%Y")
+
+    try:
+        stats["size_bytes"] = os.path.getsize(log_path)
+        # Count lines efficiently
+        result = subprocess.run(["wc", "-l", log_path], capture_output=True, text=True, timeout=5)
+        stats["total_requests"] = int(result.stdout.strip().split()[0])
+
+        # Today's requests
+        result = subprocess.run(
+            ["grep", "-c", today, log_path],
+            capture_output=True, text=True, timeout=5
+        )
+        stats["today_requests"] = int(result.stdout.strip()) if result.returncode == 0 else 0
+
+        # Error requests (4xx and 5xx)
+        result = subprocess.run(
+            ["grep", "-cE", '" [45][0-9]{2} ', log_path],
+            capture_output=True, text=True, timeout=5
+        )
+        stats["error_requests"] = int(result.stdout.strip()) if result.returncode == 0 else 0
+
+    except Exception:
+        pass
+
+    return stats
+
+
+def format_bytes(b):
+    """Format bytes to human-readable."""
+    if b < 1024:
+        return f"{b}B"
+    elif b < 1048576:
+        return f"{b/1024:.1f}KB"
+    elif b < 1073741824:
+        return f"{b/1048576:.1f}MB"
+    else:
+        return f"{b/1073741824:.1f}GB"
+
+app.jinja_env.filters["format_bytes"] = format_bytes
+
+
+# ══════════════════════════════════════════════════════════════════
+#  HUB — Dashboard, App Registry, Log Viewer
+# ══════════════════════════════════════════════════════════════════
 
 @app.route("/dashboard")
 @login_required
 def dashboard():
     db = get_db()
-    notes = db.execute(
-        "SELECT * FROM notes WHERE user_id = ? ORDER BY updated DESC",
-        (session["user_id"],)
-    ).fetchall()
-    return render_template("dashboard.html", notes=notes)
+    apps = db.execute("SELECT * FROM apps ORDER BY name ASC").fetchall()
 
-# ── Account ───────────────────────────────────────────────────────
+    # Check health for each app
+    app_data = []
+    for a in apps:
+        status = check_app_health(a)
+        # Update status in DB
+        db.execute("UPDATE apps SET status = ?, last_check = ? WHERE id = ?",
+                   (status, datetime.now(timezone.utc).isoformat(), a["id"]))
+        log_stats = get_log_stats(a["log_path"])
+        app_data.append({
+            "app": a,
+            "status": status,
+            "log_stats": log_stats,
+        })
+    db.commit()
+
+    server = get_server_stats()
+
+    return render_template("dashboard.html", apps=app_data, server=server)
+
+
+# ── App CRUD ──────────────────────────────────────────────────────
+
+@app.route("/apps/new", methods=["GET", "POST"])
+@login_required
+def new_app():
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        slug = slugify(name) if name else ""
+        url = request.form.get("url", "").strip()
+        github_url = request.form.get("github_url", "").strip()
+        server_path = request.form.get("server_path", "").strip()
+        port = request.form.get("port", "0").strip()
+        service_name = request.form.get("service_name", "").strip()
+        log_path = request.form.get("log_path", "").strip()
+        description = request.form.get("description", "").strip()
+
+        if not name:
+            flash("App name is required.", "error")
+            return redirect("/apps/new")
+
+        # Check slug uniqueness
+        db = get_db()
+        existing = db.execute("SELECT id FROM apps WHERE slug = ?", (slug,)).fetchone()
+        if existing:
+            flash("An app with that name already exists.", "error")
+            return redirect("/apps/new")
+
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            port_int = int(port) if port else 0
+        except ValueError:
+            port_int = 0
+
+        db.execute("""
+            INSERT INTO apps (name, slug, url, github_url, server_path, port, service_name, log_path, description, created, updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (name, slug, url, github_url, server_path, port_int, service_name, log_path, description, now, now))
+        db.commit()
+        flash(f"App '{name}' registered.", "success")
+        return redirect("/dashboard")
+
+    return render_template("apps/new.html")
+
+
+@app.route("/apps/<slug>")
+@login_required
+def view_app(slug):
+    db = get_db()
+    a = db.execute("SELECT * FROM apps WHERE slug = ?", (slug,)).fetchone()
+    if not a:
+        abort(404)
+
+    status = check_app_health(a)
+    service_info = get_service_status(a["service_name"])
+    log_stats = get_log_stats(a["log_path"])
+    recent_logs = read_log_lines(a["log_path"], 50)
+
+    return render_template("apps/view.html",
+                           app=a, status=status, service_info=service_info,
+                           log_stats=log_stats, recent_logs=recent_logs)
+
+
+@app.route("/apps/<slug>/edit", methods=["GET", "POST"])
+@login_required
+def edit_app(slug):
+    db = get_db()
+    a = db.execute("SELECT * FROM apps WHERE slug = ?", (slug,)).fetchone()
+    if not a:
+        abort(404)
+
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        url = request.form.get("url", "").strip()
+        github_url = request.form.get("github_url", "").strip()
+        server_path = request.form.get("server_path", "").strip()
+        port = request.form.get("port", "0").strip()
+        service_name = request.form.get("service_name", "").strip()
+        log_path = request.form.get("log_path", "").strip()
+        description = request.form.get("description", "").strip()
+
+        try:
+            port_int = int(port) if port else 0
+        except ValueError:
+            port_int = 0
+
+        db.execute("""
+            UPDATE apps SET name=?, url=?, github_url=?, server_path=?, port=?, service_name=?, log_path=?, description=?, updated=?
+            WHERE id=?
+        """, (name, url, github_url, server_path, port_int, service_name, log_path, description,
+              datetime.now(timezone.utc).isoformat(), a["id"]))
+        db.commit()
+        flash(f"App '{name}' updated.", "success")
+        return redirect(f"/apps/{slug}")
+
+    return render_template("apps/edit.html", app=a)
+
+
+@app.route("/apps/<slug>/delete", methods=["POST"])
+@login_required
+def delete_app(slug):
+    db = get_db()
+    db.execute("DELETE FROM apps WHERE slug = ?", (slug,))
+    db.commit()
+    flash("App removed.", "success")
+    return redirect("/dashboard")
+
+
+@app.route("/apps/<slug>/logs")
+@login_required
+def app_logs(slug):
+    db = get_db()
+    a = db.execute("SELECT * FROM apps WHERE slug = ?", (slug,)).fetchone()
+    if not a:
+        abort(404)
+
+    num_lines = request.args.get("lines", "200", type=str)
+    try:
+        num_lines = min(int(num_lines), 1000)
+    except ValueError:
+        num_lines = 200
+
+    filter_text = request.args.get("filter", "").strip()
+    logs = read_log_lines(a["log_path"], num_lines)
+
+    if filter_text:
+        logs = [line for line in logs if filter_text.lower() in line.lower()]
+
+    log_stats = get_log_stats(a["log_path"])
+
+    return render_template("apps/logs.html", app=a, logs=logs, log_stats=log_stats,
+                           num_lines=num_lines, filter_text=filter_text)
+
+
+@app.route("/apps/<slug>/restart", methods=["POST"])
+@platform_admin_required
+def restart_app(slug):
+    db = get_db()
+    a = db.execute("SELECT * FROM apps WHERE slug = ?", (slug,)).fetchone()
+    if not a or not a["service_name"]:
+        flash("No service configured for this app.", "error")
+        return redirect(f"/apps/{slug}")
+
+    try:
+        result = subprocess.run(
+            ["systemctl", "restart", a["service_name"]],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0:
+            flash(f"Service '{a['service_name']}' restarted.", "success")
+        else:
+            flash(f"Restart failed: {result.stderr.strip()}", "error")
+    except Exception as e:
+        flash(f"Restart failed: {e}", "error")
+
+    return redirect(f"/apps/{slug}")
+
+
+# ── API Endpoints ─────────────────────────────────────────────────
+
+@app.route("/api/health")
+@csrf.exempt
+def api_health():
+    """Health check endpoint for this admin hub."""
+    return jsonify({"status": "ok", "app": APP_NAME})
+
+
+@app.route("/api/apps")
+@login_required
+def api_apps():
+    """JSON list of all registered apps with status."""
+    db = get_db()
+    apps = db.execute("SELECT * FROM apps ORDER BY name ASC").fetchall()
+    result = []
+    for a in apps:
+        status = check_app_health(a)
+        result.append({
+            "name": a["name"],
+            "slug": a["slug"],
+            "url": a["url"],
+            "status": status,
+            "port": a["port"],
+            "service_name": a["service_name"],
+        })
+    return jsonify(result)
+
+
+@app.route("/api/server")
+@login_required
+def api_server():
+    """JSON server stats."""
+    return jsonify(get_server_stats())
+
+
+# ══════════════════════════════════════════════════════════════════
+#  ACCOUNT
+# ══════════════════════════════════════════════════════════════════
 
 @app.route("/account")
 @login_required
@@ -656,7 +1064,6 @@ def account_avatar():
 @app.route("/account/export")
 @login_required
 def account_export():
-    """GDPR data export — download all your data as JSON."""
     db = get_db()
     uid = session["user_id"]
     user = get_user_by_id(uid)
@@ -666,8 +1073,6 @@ def account_export():
             "bio": user["bio"], "location": user["location"], "website": user["website"],
             "created": user["created"]
         },
-        "notes": [dict(r) for r in db.execute(
-            "SELECT id, title, body, created, updated FROM notes WHERE user_id = ?", (uid,)).fetchall()],
         "exported_at": datetime.now(timezone.utc).isoformat()
     }
     return json.dumps(data, indent=2), 200, {
@@ -678,7 +1083,6 @@ def account_export():
 @app.route("/account/delete", methods=["POST"])
 @login_required
 def account_delete():
-    """GDPR right to deletion — delete account and all associated data."""
     uid = session["user_id"]
     db = get_db()
     db.execute("DELETE FROM users WHERE id = ?", (uid,))
@@ -694,73 +1098,6 @@ def uploaded_file(filename):
     return send_from_directory(str(UPLOAD_DIR), filename)
 
 # ══════════════════════════════════════════════════════════════════
-#  EXAMPLE CRUD — Notes (delete this section when building your app)
-# ══════════════════════════════════════════════════════════════════
-
-@app.route("/notes/new", methods=["GET", "POST"])
-@login_required
-def new_note():
-    if request.method == "POST":
-        title = request.form.get("title", "").strip()
-        body = request.form.get("body", "").strip()
-        if not title:
-            flash("Title is required.", "error")
-            return redirect("/notes/new")
-        db = get_db()
-        now = datetime.now(timezone.utc).isoformat()
-        db.execute(
-            "INSERT INTO notes (user_id, title, body, created, updated) VALUES (?, ?, ?, ?, ?)",
-            (session["user_id"], title, body, now, now)
-        )
-        db.commit()
-        flash("Note created.", "success")
-        return redirect("/dashboard")
-    return render_template("notes/new.html")
-
-@app.route("/notes/<int:nid>")
-@login_required
-def view_note(nid):
-    db = get_db()
-    note = db.execute("SELECT * FROM notes WHERE id = ? AND user_id = ?",
-                      (nid, session["user_id"])).fetchone()
-    if not note:
-        abort(404)
-    return render_template("notes/view.html", note=note)
-
-@app.route("/notes/<int:nid>/edit", methods=["GET", "POST"])
-@login_required
-def edit_note(nid):
-    db = get_db()
-    note = db.execute("SELECT * FROM notes WHERE id = ? AND user_id = ?",
-                      (nid, session["user_id"])).fetchone()
-    if not note:
-        abort(404)
-    if request.method == "POST":
-        title = request.form.get("title", "").strip()
-        body = request.form.get("body", "").strip()
-        if not title:
-            flash("Title is required.", "error")
-            return redirect(f"/notes/{nid}/edit")
-        db.execute(
-            "UPDATE notes SET title=?, body=?, updated=? WHERE id=?",
-            (title, body, datetime.now(timezone.utc).isoformat(), nid)
-        )
-        db.commit()
-        flash("Note updated.", "success")
-        return redirect(f"/notes/{nid}")
-    return render_template("notes/edit.html", note=note)
-
-@app.route("/notes/<int:nid>/delete", methods=["POST"])
-@login_required
-def delete_note(nid):
-    db = get_db()
-    db.execute("DELETE FROM notes WHERE id = ? AND user_id = ?",
-               (nid, session["user_id"]))
-    db.commit()
-    flash("Note deleted.", "success")
-    return redirect("/dashboard")
-
-# ══════════════════════════════════════════════════════════════════
 #  PLATFORM ADMIN — /admin/
 # ══════════════════════════════════════════════════════════════════
 
@@ -771,14 +1108,12 @@ def admin_dashboard():
     tab = request.args.get("tab", "users")
     stats = {
         "total_users": db.execute("SELECT COUNT(*) FROM users").fetchone()[0],
+        "total_apps": db.execute("SELECT COUNT(*) FROM apps").fetchone()[0],
         "new_users_7d": db.execute(
             "SELECT COUNT(*) FROM users WHERE created >= datetime('now', '-7 days')"
         ).fetchone()[0],
     }
-    users = db.execute("""
-        SELECT u.*
-        FROM users u ORDER BY u.created DESC
-    """).fetchall()
+    users = db.execute("SELECT * FROM users ORDER BY created DESC").fetchall()
 
     activity = []
     for u in db.execute("SELECT id AS user_id, name AS user_name, created FROM users ORDER BY created DESC LIMIT 30").fetchall():

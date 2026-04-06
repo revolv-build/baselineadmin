@@ -18,6 +18,8 @@ def app():
     """Create application for testing."""
     flask_app.config["TESTING"] = True
     flask_app.config["WTF_CSRF_ENABLED"] = False  # Disable CSRF for tests
+    from app import limiter
+    limiter.enabled = False  # Disable rate limiting for tests
     return flask_app
 
 

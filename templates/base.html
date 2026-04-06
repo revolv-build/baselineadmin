@@ -27,6 +27,7 @@
     <a href="/dashboard" class="logo">&#9672; {{ app_name }}</a>
     <div class="nav-links">
       <a href="/dashboard" {% if request.path == '/dashboard' %}class="active"{% endif %}>Dashboard</a>
+      <a href="/apps/new" {% if request.path == '/apps/new' %}class="active"{% endif %}>+ App</a>
       <a href="/account" {% if request.path.startswith('/account') %}class="active"{% endif %}>Account</a>
       <a href="/logout">Log out</a>
     </div>

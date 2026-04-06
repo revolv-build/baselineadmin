@@ -1,10 +1,10 @@
-# Project: [Your App Name]
+# Project: Baseline Admin
 
-> **Fork of [Baseline](https://github.com/revolv-build/baseline)** — a production-ready Flask starter kit.
-> Update this file with your project's specific details after forking.
+> Central admin hub for managing all baseline-forked apps on this server.
+> Server stats, app registry, health monitoring, log viewer, service controls.
 
-**Live:** [your-app-url]
-**Repo:** [your-repo-url]
+**Repo:** https://github.com/revolv-build/baselineadmin
+**Server:** 165.22.123.55 (1 CPU, 1.9GB RAM, 67GB disk)
 
 ---
 
@@ -13,254 +13,147 @@
 | Layer | Technology |
 |---|---|
 | **Framework** | Flask 3.x (Python 3.12) |
-| **Database** | SQLite with WAL mode, foreign keys, cascading deletes |
-| **Server** | Gunicorn (4 workers) behind Nginx reverse proxy |
-| **SSL** | Let's Encrypt via Certbot (auto-renewing) |
-| **Email** | Resend API (transactional emails — needs API key) |
-| **Process manager** | systemd (auto-restarts on crash) |
-| **Static files** | Served directly by Nginx with gzip + 7-day cache |
-| **Uploads** | Stored on disk at `uploads/`, served by Nginx |
-| **Tests** | pytest (`make test`) |
+| **Database** | SQLite with WAL mode |
+| **Server** | Gunicorn behind Nginx |
+| **Port** | 5002 |
+| **Process manager** | systemd |
 
-### Single-file architecture
-The backend is `app.py`. This is intentional for early development — split into Flask Blueprints when the file exceeds ~1,500 lines or when multiple developers are contributing.
+### What This App Does
+- **Dashboard** — server overview (CPU, memory, disk, uptime, load) + app grid with live health status
+- **App Registry** — register apps with URL, GitHub, server path, port, systemd service, log path
+- **Health Checks** — pings each app's URL (or checks systemd) on every dashboard load
+- **Log Viewer** — tail and filter gunicorn access logs for any app, with request stats
+- **Service Controls** — restart systemd services from the browser (admin only)
+- **API** — `/api/health`, `/api/apps`, `/api/server` for programmatic access
 
----
+### Apps on This Server
 
-## What's Included (from Baseline)
-
-### Authentication
-- Login / Register with honeypot + time trap bot protection
-- Password reset via email (Resend API)
-- Email verification on registration
-- Session-based auth with 7-day lifetime
-- Session regeneration to prevent fixation
-- `@login_required` and `@platform_admin_required` decorators
-
-### Account Management
-- Profile editing (name, email, bio, location, website)
-- Password change
-- Avatar upload
-- GDPR data export (JSON download)
-- GDPR account deletion (cascading deletes)
-
-### Admin Dashboard
-- Platform stats (total users, new this week)
-- User list with role management
-- Toggle admin status
-- Delete users
-- User impersonation (for debugging)
-
-### Security
-- CSRF protection (Flask-WTF) with auto-injection (`csrf.js`)
-- Rate limiting (Flask-Limiter)
-- Security headers (X-Frame-Options, CSP, HSTS, etc.)
-- Honeypot + time trap on login/register (bot protection)
-- File upload MIME validation
-- Parameterised SQL queries (no injection)
-- Password hashing (werkzeug/bcrypt)
-
-### UI
-- Dark theme throughout (#0f0f0f background)
-- Toast notifications (auto-dismiss, stacked)
-- Back to top button
-- Cookie consent banner
-- Error pages (404, 500, 429)
-- Mobile responsive
-- Markdown rendering with HTML sanitisation
-
-### Infrastructure
-- `Makefile` — run, setup, seed, test, deploy, backup
-- `seed.py` — demo data generator
-- `migrate.py` (built into app) — numbered SQL migrations
-- `setup.sh` — first-time server provisioning
-- `systemd/` and `nginx/` — example deployment configs
-- GitHub Actions — deploy on push, tests on PR
-- `.env.example` — documented config template
-
-### Example CRUD (Notes)
-A working create/read/update/delete flow for "notes" is included as a pattern to copy. **Delete the notes code when you build your own features.** The notes code lives in:
-- `app.py` — routes in the "EXAMPLE CRUD" section
-- `templates/notes/` — new, view, edit templates
-- `tests/test_notes.py` — example tests
+| App | Port | Domain | Service | Log |
+|-----|------|--------|---------|-----|
+| Community | 5001 | community.revolv.uk | community.service | /var/log/community.log |
+| Brandkit | 5000 | brandkit.revolv.uk | brandkit.service | /var/log/brandkit.log |
+| Ganttly | - | Not deployed | - | - |
+| Baseline Admin | 5002 | Not deployed | - | - |
 
 ---
 
 ## Database Schema
 
 ```
-users    — Platform accounts (name, email, password_hash, is_admin, email_verified, bio, location, website, avatar_path)
-notes    — Example CRUD entity (delete when building your features)
+users — Platform accounts (auth, admin, account management)
+apps  — Registered apps (name, slug, url, github_url, server_path, port, service_name, log_path, description, status, last_check)
 ```
-
-Schema is created in `init_db()` in app.py. Migrations go in `migrations/` as numbered `.sql` files.
 
 ---
 
-## Deployment
+## Key Routes
 
-- **CI/CD:** GitHub Actions — pushes to main trigger deploy via SSH
-- **GitHub Secrets needed:** `SSH_HOST`, `SSH_PRIVATE_KEY`, `APP_DIR`, `APP_SERVICE`
-- **Manual deploy:** `make deploy` (update the SSH details in Makefile first)
-- **First-time setup:** `bash setup.sh YOUR_APP your.domain.com 5000`
-- **Logs:** `journalctl -u YOUR_APP -f`
+### Hub
+- `/dashboard` — server overview + app grid
+- `/apps/new` — register a new app
+- `/apps/<slug>` — app detail (config, stats, service info, recent logs)
+- `/apps/<slug>/edit` — edit app config
+- `/apps/<slug>/logs` — full log viewer with filtering
+- `/apps/<slug>/restart` — restart systemd service (admin only)
+- `/apps/<slug>/delete` — remove from dashboard
+
+### API
+- `/api/health` — hub health check (no auth)
+- `/api/apps` — JSON list of apps with status
+- `/api/server` — JSON server stats
+
+### Auth (from baseline)
+- `/login`, `/register`, `/logout`
+- `/forgot-password`, `/reset-password/<token>`
+- `/verify-email/<token>`
+
+### Account (from baseline)
+- `/account` — profile, password, avatar, GDPR export/delete
+
+### Admin (from baseline)
+- `/admin` — user management, impersonation
 
 ---
 
 ## How To
 
-### Add a new page
-1. Add a route in `app.py` with `@login_required` (or `@platform_admin_required`)
-2. Create a template in `templates/` extending `base.html`
-3. Add a nav link in `templates/base.html` if it should appear in navigation
+### Register a new app
+1. Go to `/apps/new` or click "+ Register App"
+2. Fill in name, URL, GitHub, server path, port, service name, log path
+3. The app will show on the dashboard with live health checks
 
-### Add a new database table
-1. Add `CREATE TABLE IF NOT EXISTS` to `init_db()` in `app.py`
-2. For existing databases, also add an `ALTER TABLE` or `CREATE TABLE` in a new file under `migrations/` (e.g. `002_add_projects.sql`)
-3. The migration runs automatically on next boot
+### Deploy a new baseline app
+1. Fork `revolv-build/baseline`
+2. Set up on server with `bash setup.sh appname domain.com PORT`
+3. Register it in baselineadmin
 
-### Add a new CRUD feature
-1. Copy the notes pattern (routes + templates + tests)
-2. Add your table to `init_db()`
-3. Create routes with `@login_required`
-4. Create templates extending `base.html`
-5. Add tests in `tests/`
-
-### Add file uploads to a feature
-1. Follow the avatar upload pattern in `account_avatar()`
-2. Use `secure_filename()` and check against `ALLOWED_EXTENSIONS`
-3. Store in `uploads/<feature_name>/`
-4. Nginx serves `uploads/` directly in production
-
-### Add a new admin feature
-1. Add route with `@platform_admin_required`
-2. Add to `admin.html` template
-3. Add to admin bar in `base.html` if it's a top-level section
-
-### Send an email
-```python
-send_email(
-    to="user@example.com",
-    subject="Your subject",
-    html_body="<h1>Hello</h1><p>Your email content.</p>"
-)
-```
-Emails are logged to console if `RESEND_API_KEY` is not set.
-
-### Deploy
-1. Push to main (auto-deploys via GitHub Actions)
-2. Or manually: `make deploy`
-3. First-time: `bash setup.sh appname domain.com 5000`
-
-### Run tests
-```bash
-make test
-```
-
-### Common gotchas
-- Always use parameterised queries (`?` placeholders) — never f-strings in SQL
-- Always add CSRF token to new forms (handled automatically by `csrf.js`)
-- New migrations must be idempotent (`IF NOT EXISTS`, `ALTER TABLE` with try/except)
-- Test with `make run` before pushing
-- The default admin is `admin@example.com` / `changeme` — change this in production
+### Check why an app is down
+1. Open the app detail page — check the status badge
+2. Look at Service Details (state, PID, memory)
+3. Check recent logs at the bottom
+4. Use "View Full Logs" to search for errors
+5. Use "Restart Service" if needed
 
 ---
 
 ## Patterns & Conventions
 
-### Route structure
-- **Auth routes:** `/login`, `/register`, `/logout`, `/forgot-password`, `/reset-password/<token>`, `/verify-email/<token>`
-- **App routes:** `/dashboard`, `/notes/new`, `/notes/<id>`, `/notes/<id>/edit`
-- **Account routes:** `/account`, `/account/profile`, `/account/password`, `/account/avatar`, `/account/export`, `/account/delete`
-- **Admin routes:** `/admin`, `/admin/users/<id>/toggle-admin`, `/admin/users/<id>/delete`, `/admin/users/<id>/impersonate`
+Same as baseline (see baseline's CLAUDE.md) plus:
 
-### Auth decorators
-- `@login_required` — any authenticated user
-- `@platform_admin_required` — `is_admin` flag on users table
-
-### Database access
-- `get_db()` — returns SQLite connection from Flask `g` object, auto-closed on teardown
-- `sqlite3.Row` row factory — access columns by name
-- All queries use parameterised `?` placeholders (no SQL injection)
-
-### Template hierarchy
-- `templates/base.html` — main layout (nav, admin bar, flash messages, footer)
-- Auth templates (login, register, etc.) — standalone, don't extend base
-- App templates — extend `base.html`
-
-### CSS
-- `static/style.css` — all styles, dark theme
-- No CSS framework — all custom
-- Class naming: `.section-element` (e.g. `.adm-user-row`, `.item-card-title`)
-
-### JavaScript
-- `static/csrf.js` — auto-injects CSRF tokens into forms and fetch calls
-- `static/toast.js` — toast notification system
-- `static/platform.js` — back to top button
-- No JS framework, no build step
-
-### Helpers available in templates
-- `current_user` — the logged-in user object (or None)
-- `avatar_html(user, size)` — generates avatar HTML
-- `app_name` — the application name from config
-- `support_email` — support email from config
-- `|markdown` — renders markdown to sanitised HTML
-- `|strip_markdown` — strips markdown for plain text previews
-- `|timeago` — converts ISO datetime to relative time ("3h ago")
-- `|truncate(n)` — Jinja2 built-in, truncates text
+- **Server utilities** in `get_server_stats()`, `check_app_health()`, `get_service_status()`, `read_log_lines()`, `get_log_stats()`
+- **App CRUD** replaces the notes CRUD from baseline
+- **Templates** in `templates/apps/` (new, view, edit, logs)
+- **Hub CSS** at the bottom of `style.css` (stat-grid, app-grid, log-viewer, etc.)
 
 ---
 
 ## Do Not Touch
 
-- **Database files** (`data/app.db`) — live data in production. Never delete. Always migrate with `ALTER TABLE`.
-- **`app.secret_key`** — changing it invalidates all active sessions and password reset tokens.
-- **Other apps on the server** — check what else is running on the same port range before deploying.
+- **Other apps' services** — this app can restart them, but be careful
+- **Log files** — read-only access, never write to other apps' logs
+- **Database files** — never delete `data/app.db`
 
 ---
 
 ## Key Decisions Log
 
-<!-- Add dated entries here when making architectural decisions -->
-
-**YYYY-MM-DD** — Forked from Baseline. [Describe why, what the app will do]
+**2026-04-06** — Created from baseline. Replaced notes CRUD with app registry + server monitoring hub.
 
 ---
 
 ## Session Protocol
 
-At the end of every session, before finishing:
-1. Update **Current State** to reflect what changed
-2. Add a dated entry to **Session Log** below
-3. Add any new architectural decisions to **Key Decisions Log**
-4. Commit the updated CLAUDE.md with: `docs: session log YYYY-MM-DD`
+At the end of every session:
+1. Update **Current State** below
+2. Add a dated entry to **Session Log**
+3. Commit: `docs: session log YYYY-MM-DD`
 
 ---
 
 ## Current State
 
 ### Built and working
-- Everything from Baseline (auth, admin, account, GDPR, security, deployment)
-- Example CRUD (notes) — delete when building your features
+- Server overview dashboard with live stats
+- App registry with CRUD
+- Health checks (HTTP + systemd)
+- Log viewer with filtering
+- Service restart (admin only)
+- API endpoints
+- Auth, account, admin (from baseline)
+- Pre-seeded with 4 apps
 
-### Not yet activated (needs config)
-- **Resend email:** Set `RESEND_API_KEY` in `.env`
-- **Production secret key:** Set `SECRET_KEY` in `.env` (auto-generated by `setup.sh`)
-
-### Next priorities
-- [ ] Define your app's core feature
-- [ ] Add your database tables
-- [ ] Build your first routes and templates
-- [ ] Delete the example notes feature
-- [ ] Update this CLAUDE.md with your project details
+### Not yet done
+- [ ] Deploy to server (systemd, nginx, SSL)
+- [ ] Auto-refresh dashboard
+- [ ] Screenshot capture per app
+- [ ] Uptime history
+- [ ] Email alerts on downtime
 
 ---
 
 ## Session Log
 
-### YYYY-MM-DD
-**Initial fork from Baseline.**
+### 2026-04-06
+**Initial build from baseline.**
 
-Forked from revolv-build/baseline. Updated CLAUDE.md with project details.
-
-[Describe what was built, decisions made, where you left off]
+Forked baseline, replaced notes with server admin hub. Added server stats, app registry, health checks, log viewer, service restart, API endpoints, hub CSS, seed with actual server apps.

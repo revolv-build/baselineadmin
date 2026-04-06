@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Dashboard - {{ app_name }}{% endblock %}
 {% block content %}
-<div class="page">
+<div class="page" style="max-width:1200px;">
+
   {% if current_user and not current_user.email_verified %}
   <div class="verify-banner mb-16">
     <span>Please verify your email address ({{ current_user.email }}) to get full access.</span>
@@ -11,33 +12,85 @@
   </div>
   {% endif %}
 
-  <div class="flex-between mb-24">
+  <!-- Server Overview -->
+  <div class="hub-header">
     <div>
-      <h1>Dashboard</h1>
-      <div class="sub" style="margin-bottom:0;">Welcome back, {{ current_user.name }}</div>
+      <h1>Server Overview</h1>
+      <div class="sub">{{ server.hostname }} &middot; {{ server.ip }}</div>
     </div>
-    <a href="/notes/new" class="btn btn-primary">New Note</a>
+    <a href="/apps/new" class="btn btn-primary">+ Register App</a>
   </div>
 
-  {% if notes %}
-  <div class="card-list">
-    {% for n in notes %}
-    <a href="/notes/{{ n.id }}" class="item-card">
-      <div class="item-card-title">{{ n.title }}</div>
-      <div class="item-card-meta">{{ n.updated | timeago }}</div>
-      {% if n.body %}
-      <div class="item-card-preview">{{ n.body | strip_markdown | truncate(120) }}</div>
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="stat-label">Uptime</div>
+      <div class="stat-value">{{ server.uptime }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Load (1m / 5m / 15m)</div>
+      <div class="stat-value">{{ server.load_1m }} / {{ server.load_5m }} / {{ server.load_15m }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Memory</div>
+      <div class="stat-value">{{ server.mem_used_gb }}GB / {{ server.mem_total_gb }}GB</div>
+      <div class="stat-bar"><div class="stat-bar-fill {% if server.mem_pct > 85 %}stat-bar-danger{% elif server.mem_pct > 60 %}stat-bar-warn{% endif %}" style="width:{{ server.mem_pct }}%"></div></div>
+      <div class="stat-sub">{{ server.mem_pct }}% used</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Disk</div>
+      <div class="stat-value">{{ server.disk_used_gb }}GB / {{ server.disk_total_gb }}GB</div>
+      <div class="stat-bar"><div class="stat-bar-fill {% if server.disk_pct > 85 %}stat-bar-danger{% elif server.disk_pct > 60 %}stat-bar-warn{% endif %}" style="width:{{ server.disk_pct }}%"></div></div>
+      <div class="stat-sub">{{ server.disk_pct }}% used</div>
+    </div>
+  </div>
+
+  <!-- Registered Apps -->
+  <div class="section-header mt-32">
+    <h2>Apps ({{ apps|length }})</h2>
+  </div>
+
+  {% if apps %}
+  <div class="app-grid">
+    {% for item in apps %}
+    <a href="/apps/{{ item.app.slug }}" class="app-card">
+      <div class="app-card-header">
+        <div class="app-card-status status-{{ item.status }}"></div>
+        <div class="app-card-name">{{ item.app.name }}</div>
+        <div class="app-card-badge badge-{{ item.status }}">{{ item.status }}</div>
+      </div>
+      {% if item.app.description %}
+      <div class="app-card-desc">{{ item.app.description[:100] }}</div>
       {% endif %}
+      <div class="app-card-meta">
+        {% if item.app.port %}
+        <span>:{{ item.app.port }}</span>
+        {% endif %}
+        {% if item.app.url %}
+        <span>{{ item.app.url | replace('https://', '') | replace('http://', '') }}</span>
+        {% endif %}
+      </div>
+      <div class="app-card-stats">
+        {% if item.log_stats.today_requests %}
+        <span>{{ item.log_stats.today_requests }} reqs today</span>
+        {% endif %}
+        {% if item.log_stats.total_requests %}
+        <span>{{ item.log_stats.total_requests }} total</span>
+        {% endif %}
+        {% if item.log_stats.error_requests %}
+        <span class="text-warn">{{ item.log_stats.error_requests }} errors</span>
+        {% endif %}
+      </div>
     </a>
     {% endfor %}
   </div>
   {% else %}
   <div class="empty-state">
-    <div class="empty-state-icon">&#9998;</div>
-    <h2>No notes yet</h2>
-    <p>Create your first note to get started.</p>
-    <a href="/notes/new" class="btn btn-primary" style="margin-top:16px;">Create a Note</a>
+    <div class="empty-state-icon">&#9881;</div>
+    <h3>No apps registered</h3>
+    <p>Register your first app to start monitoring.</p>
+    <a href="/apps/new" class="btn btn-primary" style="margin-top:16px;">Register App</a>
   </div>
   {% endif %}
+
 </div>
 {% endblock %}
