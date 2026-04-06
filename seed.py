@@ -61,12 +61,12 @@ def seed():
         {
             "name": "Baseline Admin",
             "slug": "baselineadmin",
-            "url": "",
+            "url": "https://admin.revolv.uk",
             "github_url": "https://github.com/revolv-build/baselineadmin",
             "server_path": "/root/baselineadmin",
             "port": 5002,
-            "service_name": "",
-            "log_path": "",
+            "service_name": "baselineadmin.service",
+            "log_path": "/var/log/baselineadmin.log",
             "description": "Central admin hub — this app. Server monitoring and app management.",
         },
     ]

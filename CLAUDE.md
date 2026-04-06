@@ -3,6 +3,7 @@
 > Central admin hub for managing all baseline-forked apps on this server.
 > Server stats, app registry, health monitoring, log viewer, service controls.
 
+**Live:** https://admin.revolv.uk
 **Repo:** https://github.com/revolv-build/baselineadmin
 **Server:** 165.22.123.55 (1 CPU, 1.9GB RAM, 67GB disk)
 
@@ -33,7 +34,7 @@
 | Community | 5001 | community.revolv.uk | community.service | /var/log/community.log |
 | Brandkit | 5000 | brandkit.revolv.uk | brandkit.service | /var/log/brandkit.log |
 | Ganttly | - | Not deployed | - | - |
-| Baseline Admin | 5002 | Not deployed | - | - |
+| Baseline Admin | 5002 | admin.revolv.uk | baselineadmin.service | /var/log/baselineadmin.log |
 
 ---
 
