@@ -31,7 +31,16 @@
       <a href="/account" {% if request.path.startswith('/account') %}class="active"{% endif %}>Account</a>
       <a href="/logout">Log out</a>
     </div>
+    <button class="burger" id="burger" aria-label="Menu">
+      <span></span><span></span><span></span>
+    </button>
   </nav>
+  <div class="mobile-menu" id="mobileMenu">
+    <a href="/dashboard" {% if request.path == '/dashboard' %}class="active"{% endif %}>Dashboard</a>
+    <a href="/apps/new" {% if request.path == '/apps/new' %}class="active"{% endif %}>+ App</a>
+    <a href="/account" {% if request.path.startswith('/account') %}class="active"{% endif %}>Account</a>
+    <a href="/logout">Log out</a>
+  </div>
   {% endif %}
 
   {% if session.get('impersonator_id') %}
@@ -69,6 +78,9 @@
     <button class="btn btn-primary btn-sm" onclick="document.getElementById('cookie-banner').style.display='none';localStorage.setItem('cookies_ok','1');">Got it</button>
   </div>
   <script>if(!localStorage.getItem('cookies_ok'))document.getElementById('cookie-banner').style.display='';</script>
+  <script>
+  (function(){var b=document.getElementById('burger'),m=document.getElementById('mobileMenu');if(b&&m){b.addEventListener('click',function(){b.classList.toggle('open');m.classList.toggle('open');});}})();
+  </script>
   <script src="{{ url_for('static', filename='csrf.js') }}"></script>
   <script src="{{ url_for('static', filename='toast.js') }}"></script>
 </body>

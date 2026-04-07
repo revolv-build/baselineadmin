@@ -44,6 +44,52 @@
     </div>
   </div>
 
+  <div class="mini-stat-grid">
+    <div class="mini-stat">
+      <span class="mini-stat-label">CPU</span>
+      <span class="mini-stat-value">{{ server.cpu_count }} core{{ 's' if server.cpu_count != 1 }}</span>
+    </div>
+    <div class="mini-stat">
+      <span class="mini-stat-label">Swap</span>
+      <span class="mini-stat-value">{{ server.swap_used_mb }}MB / {{ server.swap_total_mb }}MB</span>
+    </div>
+    <div class="mini-stat">
+      <span class="mini-stat-label">Processes</span>
+      <span class="mini-stat-value">{{ server.processes }}</span>
+    </div>
+    <div class="mini-stat">
+      <span class="mini-stat-label">Connections</span>
+      <span class="mini-stat-value">{{ server.net_connections }}</span>
+    </div>
+    <div class="mini-stat">
+      <span class="mini-stat-label">OS</span>
+      <span class="mini-stat-value">{{ server.os }}</span>
+    </div>
+    <div class="mini-stat">
+      <span class="mini-stat-label">Claude Code</span>
+      <span class="mini-stat-value" style="{% if server.claude_sessions > 0 %}color:#D97757;{% endif %}">{{ server.claude_sessions }} active</span>
+    </div>
+  </div>
+
+  <div class="claude-links">
+    <a href="https://console.anthropic.com/dashboard" target="_blank">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+      Dashboard
+    </a>
+    <a href="https://console.anthropic.com/settings/keys" target="_blank">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+      API Keys
+    </a>
+    <a href="https://docs.anthropic.com/en/docs" target="_blank">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+      Docs
+    </a>
+    <a href="https://console.anthropic.com/settings/usage" target="_blank">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+      Usage
+    </a>
+  </div>
+
   <!-- Registered Apps -->
   <div class="section-header mt-32">
     <h2>Apps ({{ apps|length }})</h2>
@@ -52,7 +98,7 @@
   {% if apps %}
   <div class="app-grid">
     {% for item in apps %}
-    <a href="/apps/{{ item.app.slug }}" class="app-card">
+    <a href="/apps/{{ item.app.slug }}" class="app-card" style="position:relative;">
       <div class="app-card-header">
         <div class="app-card-status status-{{ item.status }}"></div>
         <div class="app-card-name">{{ item.app.name }}</div>
@@ -79,6 +125,10 @@
         {% if item.log_stats.error_requests %}
         <span class="text-warn">{{ item.log_stats.error_requests }} errors</span>
         {% endif %}
+      </div>
+      <div class="claude-badge {% if item.claude_active %}claude-active{% endif %}">
+        <img src="{{ url_for('static', filename='claudecode-color.svg') }}" width="14" height="14" alt="Claude Code">
+        <span>Claude Code {{ 'Active' if item.claude_active else '' }}</span>
       </div>
     </a>
     {% endfor %}

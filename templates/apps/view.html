@@ -14,13 +14,20 @@
       <div class="sub" style="margin-left:26px;">{{ app.description }}</div>
       {% endif %}
     </div>
-    <div class="flex gap-8">
-      <a href="/apps/{{ app.slug }}/logs" class="btn btn-secondary">View Logs</a>
-      <a href="/apps/{{ app.slug }}/edit" class="btn btn-secondary">Edit</a>
-      {% if app.url %}
-      <a href="{{ app.url }}" target="_blank" class="btn btn-primary">Open App &#8599;</a>
-      {% endif %}
-    </div>
+  </div>
+
+  <div class="app-actions-grid mt-12">
+    {% if app.server_path %}
+    <a href="/apps/{{ app.slug }}/terminal" class="claude-connect-btn {% if claude_active %}active{% endif %}">
+      <img src="{{ url_for('static', filename='claudecode-color.svg') }}" width="16" height="16" alt="">
+      <span>Claude Code</span>
+    </a>
+    {% endif %}
+    <a href="/apps/{{ app.slug }}/logs" class="btn btn-secondary">View Logs</a>
+    <a href="/apps/{{ app.slug }}/edit" class="btn btn-secondary">Edit</a>
+    {% if app.url %}
+    <a href="{{ app.url }}" target="_blank" class="btn btn-primary">Open App &#8599;</a>
+    {% endif %}
   </div>
 
   <!-- Quick Info -->
@@ -124,6 +131,9 @@
   <div class="card mt-24">
     <h3 class="card-title">Actions</h3>
     <div class="flex gap-8" style="flex-wrap:wrap;">
+      {% if app.server_path %}
+      <a href="/apps/{{ app.slug }}/terminal" class="btn btn-primary">Open Claude Code</a>
+      {% endif %}
       <a href="/apps/{{ app.slug }}/logs" class="btn btn-secondary">View Full Logs</a>
       {% if app.service_name %}
       <form method="POST" action="/apps/{{ app.slug }}/restart" style="display:inline;" onsubmit="return confirm('Restart {{ app.name }}?');">

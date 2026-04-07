@@ -1,14 +1,66 @@
 {% extends "base.html" %}
-{% block title %}Register App - {{ app_name }}{% endblock %}
+{% block title %}New App - {{ app_name }}{% endblock %}
 {% block content %}
 <div class="page" style="max-width:640px;">
-  <h1>Register App</h1>
-  <div class="sub">Add an app to your server dashboard.</div>
-  <div class="card">
+  <h1>New App</h1>
+  <div class="sub">Create and deploy a new app, or register an existing one.</div>
+
+  <div class="adm-tabs" style="margin-top:20px;">
+    <a href="#" class="adm-tab active" data-mode="deploy" onclick="switchMode('deploy',event)">
+      <span class="adm-tab-icon">&#9889;</span> Create &amp; Deploy
+    </a>
+    <a href="#" class="adm-tab" data-mode="register" onclick="switchMode('register',event)">
+      <span class="adm-tab-icon">&#9998;</span> Quick Register
+    </a>
+  </div>
+
+  <!-- Create & Deploy -->
+  <div class="card" id="mode-deploy" style="border-top-left-radius:0;">
     <form method="POST">
+      <input type="hidden" name="mode" value="deploy">
       <div class="field">
         <div class="label">App Name *</div>
-        <input name="name" required autofocus placeholder="e.g. Community Platform" />
+        <input name="name" required autofocus placeholder="e.g. invoicehub" />
+        <div class="hint">Used as directory name, service name, and URL slug. Lowercase + hyphens.</div>
+      </div>
+      <div class="field">
+        <div class="label">Domain *</div>
+        <input name="domain" required placeholder="e.g. invoicehub.revolv.uk" />
+      </div>
+      <div class="field">
+        <div class="label">Description</div>
+        <textarea name="description" placeholder="What does this app do?" style="min-height:60px;"></textarea>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <div class="label">Port (auto-assigned)</div>
+          <input value="{{ next_port }}" disabled />
+          <div class="hint">Next available port on this server.</div>
+        </div>
+        <div class="field">
+          <div class="label">GitHub Repo Name</div>
+          <input name="github_repo" placeholder="e.g. invoicehub" />
+          <div class="hint">Creates under revolv-build org. Leave blank to skip.</div>
+        </div>
+      </div>
+      <div class="field" style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" name="ssl" checked id="ssl-check" style="width:auto;" />
+        <label for="ssl-check" style="color:#aaa;font-size:13px;cursor:pointer;">Enable SSL (run certbot after setup)</label>
+      </div>
+      <div class="flex gap-8" style="margin-top:8px;">
+        <button type="submit" class="btn btn-primary">Create &amp; Deploy</button>
+        <a href="/dashboard" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+
+  <!-- Quick Register -->
+  <div class="card" id="mode-register" style="display:none;border-top-left-radius:0;">
+    <form method="POST">
+      <input type="hidden" name="mode" value="register">
+      <div class="field">
+        <div class="label">App Name *</div>
+        <input name="name" required placeholder="e.g. Community Platform" />
       </div>
       <div class="field">
         <div class="label">URL</div>
@@ -51,4 +103,14 @@
     </form>
   </div>
 </div>
+
+<script>
+function switchMode(mode, event) {
+  event.preventDefault();
+  document.querySelectorAll('.adm-tab').forEach(function(t) { t.classList.remove('active'); });
+  event.currentTarget.classList.add('active');
+  document.getElementById('mode-deploy').style.display = mode === 'deploy' ? '' : 'none';
+  document.getElementById('mode-register').style.display = mode === 'register' ? '' : 'none';
+}
+</script>
 {% endblock %}

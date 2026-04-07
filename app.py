@@ -14,6 +14,7 @@ Architecture:
 import json
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import time
@@ -22,8 +23,11 @@ from functools import wraps
 from pathlib import Path
 
 from dotenv import load_dotenv
+import secrets as secrets_mod
+import shutil
+
 from flask import (
-    Flask, render_template, request,
+    Flask, Response, render_template, request,
     redirect, url_for, session, flash, g, abort, send_from_directory, jsonify
 )
 from flask_wtf.csrf import CSRFProtect
@@ -79,7 +83,7 @@ limiter = Limiter(get_remote_address, app=app, default_limits=["200 per minute"]
 @app.after_request
 def set_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
@@ -256,6 +260,13 @@ def init_db():
             last_check    TEXT DEFAULT '',
             created       TEXT NOT NULL,
             updated       TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS pending_deploys (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug          TEXT NOT NULL UNIQUE,
+            config        TEXT NOT NULL,
+            created       TEXT NOT NULL
         );
     """)
 
@@ -568,6 +579,119 @@ def resend_verification():
 #  SERVER UTILITIES — system info, health checks, log reading
 # ══════════════════════════════════════════════════════════════════
 
+def get_claude_code_dirs():
+    """Return set of working directories where Claude Code instances are running."""
+    dirs = set()
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "claude"], capture_output=True, text=True, timeout=5
+        )
+        for pid in result.stdout.strip().split("\n"):
+            if not pid:
+                continue
+            cwd_link = f"/proc/{pid}/cwd"
+            try:
+                dirs.add(os.readlink(cwd_link))
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return dirs
+
+
+# ── Terminal Sessions ─────────────────────────────────────────────
+
+TERMINAL_CONF_DIR = Path("/etc/nginx/terminal.d")
+TERMINAL_DATA_DIR = Path("/root/baselineadmin/data/terminals")
+TERMINAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
+TERMINAL_MAX_CONCURRENT = 2
+TERMINAL_TIMEOUT_SECS = 7200  # 2 hours
+
+
+def _get_terminal_session(slug):
+    """Read terminal session info from file."""
+    path = TERMINAL_DATA_DIR / f"{slug}.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            pass
+    return None
+
+
+def _save_terminal_session(slug, info):
+    """Save terminal session info to file."""
+    info["created"] = time.time()
+    (TERMINAL_DATA_DIR / f"{slug}.json").write_text(json.dumps(info))
+
+
+def _remove_terminal_session(slug):
+    """Remove terminal session file."""
+    path = TERMINAL_DATA_DIR / f"{slug}.json"
+    if path.exists():
+        path.unlink()
+
+
+def _kill_terminal(info):
+    """Kill a ttyd process and remove its nginx conf."""
+    try:
+        os.kill(info["pid"], signal.SIGTERM)
+    except OSError:
+        pass
+    conf = TERMINAL_CONF_DIR / f"{info.get('token', '')}.conf"
+    if conf.exists():
+        conf.unlink()
+
+
+def _active_terminal_count():
+    """Count currently running terminal sessions."""
+    count = 0
+    for f in TERMINAL_DATA_DIR.glob("*.json"):
+        try:
+            info = json.loads(f.read_text())
+            os.kill(info["pid"], 0)
+            count += 1
+        except (OSError, KeyError, json.JSONDecodeError):
+            pass
+    return count
+
+
+def _cleanup_stale_terminals():
+    """Remove entries whose ttyd process has died or timed out."""
+    if not TERMINAL_DATA_DIR.exists():
+        return
+    reloaded = False
+    now = time.time()
+    for f in TERMINAL_DATA_DIR.glob("*.json"):
+        try:
+            info = json.loads(f.read_text())
+            os.kill(info["pid"], 0)
+            # Kill if timed out
+            if now - info.get("created", 0) > TERMINAL_TIMEOUT_SECS:
+                _kill_terminal(info)
+                f.unlink(missing_ok=True)
+                reloaded = True
+                continue
+        except (OSError, KeyError, json.JSONDecodeError):
+            # Process dead or bad file — clean up
+            try:
+                conf = TERMINAL_CONF_DIR / f"{info.get('token', '')}.conf"
+                if conf.exists():
+                    conf.unlink()
+                    reloaded = True
+            except Exception:
+                pass
+            f.unlink(missing_ok=True)
+    if reloaded:
+        subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, timeout=10)
+
+
+# Clean up stale terminal configs on startup
+_cleanup_stale_terminals()
+for conf in TERMINAL_CONF_DIR.glob("*.conf"):
+    conf.unlink()
+
+
 def get_server_stats():
     """Gather live server statistics."""
     stats = {}
@@ -647,6 +771,48 @@ def get_server_stats():
         ).stdout.strip().split()[0]
     except Exception:
         stats["ip"] = "unknown"
+
+    # Process count
+    try:
+        result = subprocess.run(["ps", "aux", "--no-headers"], capture_output=True, text=True, timeout=5)
+        stats["processes"] = len(result.stdout.strip().split("\n"))
+    except Exception:
+        stats["processes"] = "?"
+
+    # Swap usage
+    try:
+        with open("/proc/meminfo") as f:
+            meminfo = {}
+            for line in f:
+                parts = line.split(":")
+                if len(parts) == 2:
+                    meminfo[parts[0].strip()] = int(parts[1].strip().split()[0])
+            swap_total = meminfo.get("SwapTotal", 0)
+            swap_free = meminfo.get("SwapFree", 0)
+            swap_used = swap_total - swap_free
+            stats["swap_total_mb"] = round(swap_total / 1024)
+            stats["swap_used_mb"] = round(swap_used / 1024)
+            stats["swap_pct"] = round(swap_used / swap_total * 100, 1) if swap_total else 0
+    except Exception:
+        stats["swap_total_mb"] = stats["swap_used_mb"] = 0
+        stats["swap_pct"] = 0
+
+    # Network connections
+    try:
+        result = subprocess.run(["ss", "-tun", "state", "established"], capture_output=True, text=True, timeout=5)
+        stats["net_connections"] = max(0, len(result.stdout.strip().split("\n")) - 1)
+    except Exception:
+        stats["net_connections"] = "?"
+
+    # Active Claude Code sessions
+    stats["claude_sessions"] = _active_terminal_count()
+
+    # OS info
+    try:
+        result = subprocess.run(["lsb_release", "-d", "-s"], capture_output=True, text=True, timeout=5)
+        stats["os"] = result.stdout.strip().strip('"')
+    except Exception:
+        stats["os"] = "Linux"
 
     return stats
 
@@ -764,6 +930,39 @@ def format_bytes(b):
 app.jinja_env.filters["format_bytes"] = format_bytes
 
 
+# ── Deploy Utilities ─────────────────────────────────────────────
+
+
+def find_next_available_port(start=5004):
+    """Find next available port not in DB and not listening."""
+    db = get_db()
+    used_ports = {row[0] for row in db.execute("SELECT port FROM apps WHERE port > 0").fetchall()}
+    try:
+        result = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True, timeout=5)
+        for line in result.stdout.split("\n"):
+            match = re.search(r':(\d+)\s', line)
+            if match:
+                used_ports.add(int(match.group(1)))
+    except Exception:
+        pass
+    port = start
+    while port in used_ports:
+        port += 1
+    return port
+
+
+def validate_app_name(name):
+    """Validate app name for use as directory/service name."""
+    slug = slugify(name)
+    if not slug or len(slug) < 2:
+        return None, "App name must be at least 2 characters."
+    if not re.match(r'^[a-z0-9][a-z0-9-]*$', slug):
+        return None, "App name must start with a letter/number and contain only lowercase letters, numbers, and hyphens."
+    if '..' in slug or '/' in slug:
+        return None, "Invalid app name."
+    return slug, None
+
+
 # ══════════════════════════════════════════════════════════════════
 #  HUB — Dashboard, App Registry, Log Viewer
 # ══════════════════════════════════════════════════════════════════
@@ -775,6 +974,7 @@ def dashboard():
     apps = db.execute("SELECT * FROM apps ORDER BY name ASC").fetchall()
 
     # Check health for each app
+    claude_dirs = get_claude_code_dirs()
     app_data = []
     for a in apps:
         status = check_app_health(a)
@@ -782,10 +982,12 @@ def dashboard():
         db.execute("UPDATE apps SET status = ?, last_check = ? WHERE id = ?",
                    (status, datetime.now(timezone.utc).isoformat(), a["id"]))
         log_stats = get_log_stats(a["log_path"])
+        server_path = a["server_path"] or ""
         app_data.append({
             "app": a,
             "status": status,
             "log_stats": log_stats,
+            "claude_active": server_path.rstrip("/") in claude_dirs,
         })
     db.commit()
 
@@ -800,6 +1002,17 @@ def dashboard():
 @login_required
 def new_app():
     if request.method == "POST":
+        mode = request.form.get("mode", "register")
+
+        if mode == "deploy":
+            # Create & Deploy mode (admin only)
+            user = current_user()
+            if not user or not user["is_admin"]:
+                flash("Admin access required for deployment.", "error")
+                return redirect("/apps/new")
+            return _handle_deploy_form()
+
+        # Quick Register mode (existing behavior)
         name = request.form.get("name", "").strip()
         slug = slugify(name) if name else ""
         url = request.form.get("url", "").strip()
@@ -814,7 +1027,6 @@ def new_app():
             flash("App name is required.", "error")
             return redirect("/apps/new")
 
-        # Check slug uniqueness
         db = get_db()
         existing = db.execute("SELECT id FROM apps WHERE slug = ?", (slug,)).fetchone()
         if existing:
@@ -835,7 +1047,290 @@ def new_app():
         flash(f"App '{name}' registered.", "success")
         return redirect("/dashboard")
 
-    return render_template("apps/new.html")
+    next_port = find_next_available_port()
+    return render_template("apps/new.html", next_port=next_port)
+
+
+def _handle_deploy_form():
+    """Validate the Create & Deploy form and redirect to deploy progress page."""
+    name = request.form.get("name", "").strip()
+    domain = request.form.get("domain", "").strip().lower()
+    description = request.form.get("description", "").strip()
+    github_repo = request.form.get("github_repo", "").strip()
+    ssl = request.form.get("ssl") == "on"
+
+    slug, error = validate_app_name(name)
+    if error:
+        flash(error, "error")
+        return redirect("/apps/new")
+
+    db = get_db()
+    if db.execute("SELECT id FROM apps WHERE slug = ?", (slug,)).fetchone():
+        flash("An app with that name already exists.", "error")
+        return redirect("/apps/new")
+
+    if not domain or not re.match(r'^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(\.[a-z]{2,})+$', domain):
+        flash("Invalid domain format.", "error")
+        return redirect("/apps/new")
+
+    app_dir = Path(f"/root/{slug}")
+    if app_dir.exists():
+        flash(f"Directory /root/{slug} already exists.", "error")
+        return redirect("/apps/new")
+
+    port = find_next_available_port()
+
+    deploy_config = json.dumps({
+        "name": name,
+        "slug": slug,
+        "domain": domain,
+        "description": description,
+        "github_repo": github_repo,
+        "ssl": ssl,
+        "port": port,
+    })
+    db.execute("DELETE FROM pending_deploys WHERE slug = ?", (slug,))
+    db.execute("INSERT INTO pending_deploys (slug, config, created) VALUES (?, ?, ?)",
+               (slug, deploy_config, datetime.now(timezone.utc).isoformat()))
+    db.commit()
+
+    return redirect(f"/apps/deploy/{slug}")
+
+
+@app.route("/apps/deploy/<slug>")
+@platform_admin_required
+def deploy_progress(slug):
+    """Render the deploy progress page."""
+    db = get_db()
+    row = db.execute("SELECT config FROM pending_deploys WHERE slug = ?", (slug,)).fetchone()
+    if not row:
+        flash("No pending deployment found.", "error")
+        return redirect("/apps/new")
+    deploy = json.loads(row["config"])
+    return render_template("apps/deploy.html", deploy=deploy)
+
+
+@app.route("/apps/deploy/<slug>/stream")
+@csrf.exempt
+def deploy_stream(slug):
+    """SSE endpoint that provisions the app and streams progress."""
+    # Auth check (can't use decorator — must not redirect for SSE)
+    user = current_user()
+    if not user or not user["is_admin"]:
+        return "Unauthorized", 403
+
+    db = get_db()
+    row = db.execute("SELECT config FROM pending_deploys WHERE slug = ?", (slug,)).fetchone()
+    if not row:
+        return "No pending deployment", 400
+    deploy = json.loads(row["config"])
+    db.execute("DELETE FROM pending_deploys WHERE slug = ?", (slug,))
+    db.commit()
+
+    def generate():
+        name = deploy["name"]
+        s = deploy["slug"]
+        domain = deploy["domain"]
+        port = deploy["port"]
+        description = deploy["description"]
+        github_repo = deploy["github_repo"]
+        ssl = deploy["ssl"]
+        app_dir = Path(f"/root/{s}")
+
+        def send_event(step, status, message=""):
+            data = json.dumps({"step": step, "status": status, "message": message})
+            return f"data: {data}\n\n"
+
+        def run_cmd(cmd, cwd=None, timeout=120):
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+                output = (result.stdout + result.stderr).strip()
+                output = re.sub(r'\x1b\[[0-9;]*m', '', output)[:2000]
+                return result.returncode == 0, output
+            except subprocess.TimeoutExpired:
+                return False, "Command timed out"
+            except Exception as e:
+                return False, str(e)
+
+        try:
+            # Step 1: Clone baseline
+            yield send_event("clone", "running")
+            ok, out = run_cmd(["cp", "-r", "/root/baseline", str(app_dir)])
+            if not ok:
+                yield send_event("clone", "failed", out)
+                return
+            yield send_event("clone", "done")
+
+            # Step 2: Fresh git repo
+            yield send_event("git", "running")
+            git_dir = app_dir / ".git"
+            if git_dir.exists():
+                shutil.rmtree(git_dir)
+            pycache = app_dir / "__pycache__"
+            if pycache.exists():
+                shutil.rmtree(pycache)
+            # Remove baseline's venv — we'll create a fresh one
+            old_venv = app_dir / "venv"
+            if old_venv.exists():
+                shutil.rmtree(old_venv)
+            run_cmd(["git", "init"], cwd=str(app_dir))
+            run_cmd(["git", "add", "."], cwd=str(app_dir))
+            run_cmd(["git", "commit", "-m", "Initial commit from baseline"], cwd=str(app_dir))
+            yield send_event("git", "done")
+
+            # Step 3: Python venv + deps
+            yield send_event("venv", "running")
+            ok, out = run_cmd(["python3", "-m", "venv", "venv"], cwd=str(app_dir), timeout=60)
+            if not ok:
+                yield send_event("venv", "failed", out)
+                return
+            pip = str(app_dir / "venv" / "bin" / "pip")
+            ok, out = run_cmd([pip, "install", "-r", "requirements.txt", "-q"], cwd=str(app_dir), timeout=180)
+            if not ok:
+                yield send_event("venv", "failed", out)
+                return
+            yield send_event("venv", "done")
+
+            # Step 4: Generate .env
+            yield send_event("env", "running")
+            env_content = (
+                f"SECRET_KEY={secrets_mod.token_hex(32)}\n"
+                f"APP_NAME={name}\n"
+                f"SUPPORT_EMAIL=support@revolv.uk\n"
+                f"FLASK_ENV=production\n"
+                f"FLASK_DEBUG=0\n"
+                f"PORT={port}\n"
+                f"RESEND_API_KEY=\n"
+                f'EMAIL_FROM={name} <noreply@revolv.uk>\n'
+            )
+            (app_dir / ".env").write_text(env_content)
+            yield send_event("env", "done")
+
+            # Step 5: Systemd service
+            yield send_event("systemd", "running")
+            service_content = f"""[Unit]
+Description={name} Flask Application
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory={app_dir}
+Environment=FLASK_ENV=production
+ExecStart={app_dir}/venv/bin/gunicorn -w 4 -b 127.0.0.1:{port} --timeout 30 --keep-alive 5 --access-logfile /var/log/{s}.log app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+            Path(f"/etc/systemd/system/{s}.service").write_text(service_content)
+            run_cmd(["systemctl", "daemon-reload"])
+            run_cmd(["systemctl", "enable", s])
+            ok, out = run_cmd(["systemctl", "start", s])
+            if not ok:
+                yield send_event("systemd", "failed", out)
+                return
+            yield send_event("systemd", "done")
+
+            # Step 6: Nginx
+            yield send_event("nginx", "running")
+            nginx_conf = (
+                "server {\n"
+                "    listen 80;\n"
+                f"    server_name {domain};\n"
+                "\n"
+                "    location / {\n"
+                f"        proxy_pass http://127.0.0.1:{port};\n"
+                "        proxy_set_header Host $host;\n"
+                "        proxy_set_header X-Real-IP $remote_addr;\n"
+                "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+                "        proxy_set_header X-Forwarded-Proto $scheme;\n"
+                "    }\n"
+                "\n"
+                "    location /uploads/ {\n"
+                f"        alias {app_dir}/uploads/;\n"
+                "        expires 7d;\n"
+                '        add_header Cache-Control "public, immutable";\n'
+                "    }\n"
+                "\n"
+                "    location /static/ {\n"
+                f"        alias {app_dir}/static/;\n"
+                "        expires 7d;\n"
+                '        add_header Cache-Control "public, immutable";\n'
+                "        gzip_static on;\n"
+                "    }\n"
+                "\n"
+                "    client_max_body_size 50M;\n"
+                "}\n"
+            )
+            Path(f"/etc/nginx/sites-available/{s}").write_text(nginx_conf)
+            sites_enabled = Path(f"/etc/nginx/sites-enabled/{s}")
+            if not sites_enabled.exists():
+                sites_enabled.symlink_to(f"/etc/nginx/sites-available/{s}")
+            ok, out = run_cmd(["nginx", "-t"])
+            if not ok:
+                yield send_event("nginx", "failed", f"Nginx config test failed: {out}")
+                return
+            run_cmd(["systemctl", "reload", "nginx"])
+            yield send_event("nginx", "done")
+
+            # Step 7: SSL (optional, non-fatal)
+            if ssl:
+                yield send_event("ssl", "running")
+                ok, out = run_cmd(
+                    ["certbot", "--nginx", "-d", domain, "--non-interactive",
+                     "--agree-tos", "--redirect", "-m", "admin@revolv.uk"],
+                    timeout=120
+                )
+                if ok:
+                    yield send_event("ssl", "done")
+                else:
+                    yield send_event("ssl", "warning", f"Certbot failed (non-fatal): {out[:500]}")
+
+            # Step 8: GitHub repo (optional, non-fatal)
+            if github_repo:
+                yield send_event("github", "running")
+                run_cmd(["git", "remote", "add", "origin",
+                         f"https://github.com/revolv-build/{github_repo}.git"],
+                        cwd=str(app_dir))
+                ok, out = run_cmd(
+                    ["gh", "repo", "create", f"revolv-build/{github_repo}",
+                     "--private", "--source", str(app_dir), "--push"],
+                    cwd=str(app_dir), timeout=60
+                )
+                if ok:
+                    yield send_event("github", "done")
+                else:
+                    yield send_event("github", "warning", f"GitHub failed (non-fatal): {out[:500]}")
+
+            # Step 9: Register in DB
+            yield send_event("register", "running")
+            now = datetime.now(timezone.utc).isoformat()
+            github_url = f"https://github.com/revolv-build/{github_repo}" if github_repo else ""
+            app_url = f"https://{domain}" if ssl else f"http://{domain}"
+            db = sqlite3.connect(str(DB_PATH))
+            db.execute("""
+                INSERT INTO apps (name, slug, url, github_url, server_path, port, service_name, log_path, description, status, created, updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (name, s, app_url, github_url, str(app_dir), port,
+                  f"{s}.service", f"/var/log/{s}.log", description,
+                  "online", now, now))
+            db.commit()
+            db.close()
+            yield send_event("register", "done")
+
+            # Done
+            yield send_event("complete", "done", s)
+
+        except Exception as e:
+            yield send_event("error", "failed", f"Unexpected error: {str(e)}")
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.route("/apps/<slug>")
@@ -850,10 +1345,14 @@ def view_app(slug):
     service_info = get_service_status(a["service_name"])
     log_stats = get_log_stats(a["log_path"])
     recent_logs = read_log_lines(a["log_path"], 50)
+    claude_dirs = get_claude_code_dirs()
+    server_path = a["server_path"] or ""
+    claude_active = server_path.rstrip("/") in claude_dirs
 
     return render_template("apps/view.html",
                            app=a, status=status, service_info=service_info,
-                           log_stats=log_stats, recent_logs=recent_logs)
+                           log_stats=log_stats, recent_logs=recent_logs,
+                           claude_active=claude_active)
 
 
 @app.route("/apps/<slug>/edit", methods=["GET", "POST"])
@@ -949,6 +1448,190 @@ def restart_app(slug):
         flash(f"Restart failed: {e}", "error")
 
     return redirect(f"/apps/{slug}")
+
+
+# ── Terminal Sessions ─────────────────────────────────────────────
+
+
+@app.route("/apps/<slug>/terminal")
+@platform_admin_required
+def terminal_session(slug):
+    _cleanup_stale_terminals()
+
+    db = get_db()
+    a = db.execute("SELECT * FROM apps WHERE slug = ?", (slug,)).fetchone()
+    if not a or not a["server_path"]:
+        flash("App has no server path configured.", "error")
+        return redirect(f"/apps/{slug}")
+
+    # Validate server_path is a real directory (prevents path traversal)
+    server_path = Path(a["server_path"]).resolve()
+    if not server_path.is_dir() or not str(server_path).startswith("/root/"):
+        flash("Invalid server path.", "error")
+        return redirect(f"/apps/{slug}")
+
+    # If session already running for this slug, reuse it
+    info = _get_terminal_session(slug)
+    if info:
+        try:
+            os.kill(info["pid"], 0)
+            return render_template("apps/terminal.html", app=a, token=info["token"])
+        except OSError:
+            _remove_terminal_session(slug)
+
+    # Enforce concurrent session limit
+    if _active_terminal_count() >= TERMINAL_MAX_CONCURRENT:
+        flash(f"Maximum {TERMINAL_MAX_CONCURRENT} concurrent terminal sessions. Close one first.", "error")
+        return redirect(f"/apps/{slug}")
+
+    # Find available port in 7000+ range
+    port = find_next_available_port(start=7000)
+
+    # 32-byte token (256 bits of entropy)
+    token = secrets_mod.token_urlsafe(32)
+
+    # Spawn ttyd — use cwd instead of shell string to prevent command injection
+    proc = subprocess.Popen(
+        [
+            "ttyd", "--writable",
+            "--base-path", f"/terminal/{token}",
+            "-t", "fontSize=13",
+            "-i", "127.0.0.1",
+            "-p", str(port),
+            "claude"
+        ],
+        cwd=str(server_path),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    # Write nginx location conf
+    TERMINAL_CONF_DIR.mkdir(parents=True, exist_ok=True)
+    conf_path = TERMINAL_CONF_DIR / f"{token}.conf"
+    conf_path.write_text(
+        f"location /terminal/{token}/ {{\n"
+        f"    proxy_pass http://127.0.0.1:{port}/terminal/{token}/;\n"
+        f"    proxy_http_version 1.1;\n"
+        f"    proxy_set_header Upgrade $http_upgrade;\n"
+        f"    proxy_set_header Connection \"upgrade\";\n"
+        f"    proxy_set_header Host $host;\n"
+        f"    proxy_set_header X-Real-IP $remote_addr;\n"
+        f"    proxy_read_timeout 3600s;\n"
+        f"    proxy_send_timeout 3600s;\n"
+        f"}}\n"
+    )
+
+    # Reload nginx
+    subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, timeout=10)
+
+    # Track session (file-based for multi-worker safety)
+    _save_terminal_session(slug, {"pid": proc.pid, "port": port, "token": token})
+
+    # Small delay for ttyd to start
+    time.sleep(0.5)
+
+    return render_template("apps/terminal.html", app=a, token=token)
+
+
+@app.route("/apps/<slug>/terminal/stop", methods=["POST"])
+@platform_admin_required
+def terminal_stop(slug):
+    info = _get_terminal_session(slug)
+    if info:
+        try:
+            os.kill(info["pid"], signal.SIGTERM)
+        except OSError:
+            pass
+        conf = TERMINAL_CONF_DIR / f"{info['token']}.conf"
+        if conf.exists():
+            conf.unlink()
+        subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, timeout=10)
+        _remove_terminal_session(slug)
+    if request.headers.get("X-Requested-With") == "fetch":
+        return {"ok": True}
+    flash("Terminal session closed.", "success")
+    return redirect(f"/apps/{slug}")
+
+
+ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
+MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
+
+
+@app.route("/apps/<slug>/upload", methods=["POST"])
+@platform_admin_required
+def upload_reference(slug):
+    """Upload a temp image for use in Claude Code prompts."""
+    db = get_db()
+    a = db.execute("SELECT * FROM apps WHERE slug = ?", (slug,)).fetchone()
+    if not a or not a["server_path"]:
+        return {"error": "App not found"}, 404
+
+    server_path = Path(a["server_path"]).resolve()
+    if not server_path.is_dir() or not str(server_path).startswith("/root/"):
+        return {"error": "Invalid server path"}, 400
+
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return {"error": "No file provided"}, 400
+
+    ext = Path(f.filename).suffix.lower()
+    if ext not in ALLOWED_IMAGE_EXT:
+        return {"error": f"Only images allowed: {', '.join(ALLOWED_IMAGE_EXT)}"}, 400
+
+    # Read and check size
+    data = f.read()
+    if len(data) > MAX_IMAGE_SIZE:
+        return {"error": "File too large (max 10MB)"}, 400
+
+    # Save to app's tmp/ directory
+    tmp_dir = server_path / "tmp"
+    tmp_dir.mkdir(exist_ok=True)
+
+    # Unique filename
+    safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', f.filename)
+    timestamp = int(time.time())
+    filename = f"{timestamp}_{safe_name}"
+    filepath = tmp_dir / filename
+    filepath.write_bytes(data)
+
+    return {"ok": True, "path": str(filepath), "filename": filename}
+
+
+@app.route("/apps/<slug>/uploads", methods=["GET"])
+@platform_admin_required
+def list_uploads(slug):
+    """List temp uploads for an app."""
+    db = get_db()
+    a = db.execute("SELECT * FROM apps WHERE slug = ?", (slug,)).fetchone()
+    if not a or not a["server_path"]:
+        return {"files": []}
+
+    tmp_dir = Path(a["server_path"]).resolve() / "tmp"
+    if not tmp_dir.exists():
+        return {"files": []}
+
+    files = []
+    for f in sorted(tmp_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if f.suffix.lower() in ALLOWED_IMAGE_EXT:
+            files.append({"name": f.name, "path": str(f), "size": f.stat().st_size})
+    return {"files": files[:20]}
+
+
+@app.route("/apps/<slug>/upload/<filename>", methods=["DELETE"])
+@platform_admin_required
+def delete_upload(slug, filename):
+    """Delete a temp upload."""
+    db = get_db()
+    a = db.execute("SELECT * FROM apps WHERE slug = ?", (slug,)).fetchone()
+    if not a or not a["server_path"]:
+        return {"error": "Not found"}, 404
+
+    # Sanitize filename to prevent path traversal
+    safe_name = Path(filename).name
+    filepath = Path(a["server_path"]).resolve() / "tmp" / safe_name
+    if filepath.exists() and str(filepath).startswith("/root/"):
+        filepath.unlink()
+    return {"ok": True}
 
 
 # ── API Endpoints ─────────────────────────────────────────────────
